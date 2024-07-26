@@ -1,0 +1,190 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.neural_network import MLPRegressor
+import random
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error
+
+def pso(fitness_function, num_particles, dimensions, max_iter, c1, c2, w, original_data):
+  """
+  Particle Swarm Optimization implementation.
+
+  Args:
+      fitness_function: The fitness function to be evaluated.
+      num_particles: Number of particles in the swarm.
+      dimensions: Dimensionality of the search space.
+      max_iter: Maximum number of iterations.
+      c1: Cognitive coefficient.
+      c2: Social coefficient.
+      w: Inertia weight.
+      original_data: The original dataset with unscaled current values.
+
+  Returns:
+      The best solution found, global best fitness values over iterations
+  """
+
+  # Initialize particles
+  particles = np.random.uniform(low=0, high=1, size=(num_particles, dimensions))
+  velocity = np.zeros((num_particles, dimensions))
+  pbest = particles.copy()
+  pbest_fitness = np.array([fitness_function(particle) for particle in particles])
+  gbest_index = np.argmax(pbest_fitness)
+  gbest = pbest[gbest_index]
+
+  # Initialize convergence history
+  convergence_history = []
+
+  for iter in range(max_iter):
+    for i in range(num_particles):
+      # Update velocity
+      r1 = random.random()
+      r2 = random.random()
+      velocity[i] = w * velocity[i] + c1 * r1 * (pbest[i] - particles[i]) + c2 * r2 * (gbest - particles[i])
+
+      # Update position
+      particles[i] += velocity[i]
+
+      # Clip particles within bounds (0, 1)
+      particles[i] = np.clip(particles[i], 0, 1)
+
+      # Evaluate fitness
+      fitness = fitness_function(particles[i])
+      if fitness > pbest_fitness[i]:
+        pbest[i] = particles[i]
+        pbest_fitness[i] = fitness
+        if fitness > pbest_fitness[gbest_index]:
+          gbest = particles[i]
+          gbest_fitness = fitness
+
+    convergence_history.append(gbest_fitness)
+
+  return gbest, convergence_history
+
+def fitness_function(particle):
+  """
+  Evaluates predicted width for minimization and decodes flux index.
+  """
+
+  # Reshape particle to match the expected input shape of the model
+  particle_reshaped = np.zeros(7)  # Replace 7 with the actual number of features (if any)
+  particle_reshaped[:2] = particle  # Assuming the first two features are current and flux (encoded)
+  predicted_values = model.predict(particle_reshaped.reshape(1, -1))
+
+  # Ensure the model predicts a single width value
+  if len(predicted_values.shape) > 1:
+      predicted_width = predicted_values[0, 0]  # Access the first element (width)
+  else:
+      predicted_width = predicted_values[0]
+
+  return -predicted_width  # Minimize negative width
+
+# Load data from a xlsx file
+data = pd.read_excel('fareqiwidth.xlsx')
+
+# Extract relevant features
+current_feature = data['Current (A)']  # Select the 'Current (A)' column
+X = data.iloc[:, 1:]  # Select all features except the index (assuming 'Current (A)' is first)
+y = data['Width']
+
+# One-hot encode the categorical flux variable (check scikit-learn version)
+if hasattr(OneHotEncoder, 'sparse'):  # For scikit-learn >= 0.20.0
+  encoder = OneHotEncoder(sparse=False)  # Set sparse=False for array output
+else:
+  encoder = OneHotEncoder()
+X_encoded = encoder.fit_transform(X[['Micro -activated flux']]).toarray()
+
+# Fix: Convert current_feature to NumPy array before stacking
+current_feature_array = current_feature.to_numpy()[:, np.newaxis]  # Convert to 2D array with a new axis
+
+X_to_stack = np.hstack((current_feature_array, X_encoded))
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_to_stack, y, test_size=0.2, random_state=42)
+
+# Create a neural network model
+model = MLPRegressor(hidden_layer_sizes=(10, 10), activation='relu', solver='adam')
+
+# Train the model
+model.fit(X_train, y_train)
+
+# PSO parameters
+num_particles = 50
+dimensions = 2  # Current and flux (encoded)
+max_iter = 100
+c1 = c2 = 2.0
+w = 0.7
+
+# Perform PSO for width minimization
+best_solution_width, convergence_history = pso(fitness_function, num_particles, dimensions, max_iter, c1, c2, w, data)
+
+# Decode the best solution (current and flux index)
+best_current = best_solution_width[0]  # Access the first element (current) from the best solution
+best_flux_index = np.argmax(best_solution_width[1:])  # Find the index of the maximum flux value
+
+# Get the flux name based on the index
+flux_names = encoder.categories_[0]  # Get the list of flux names
+best_flux_name = flux_names[best_flux_index]
+
+# Rescale the optimized current value
+min_current = data['Current (A)'].min()
+max_current = data['Current (A)'].max()
+scaling_factor = max_current - min_current
+real_current = best_current * scaling_factor + min_current
+
+# Print the best solution
+print("Best solution: Real Current =", real_current, "Flux =", best_flux_name)
+
+# Calculate and visualize model performance
+y_pred = model.predict(X_test)
+mse = mean_squared_error(y_test, y_pred)
+print(f"Mean Squared Error (MSE): {mse}")
+
+# Plot the convergence of the PSO algorithm
+plt.figure()
+plt.plot(convergence_history)
+plt.xlabel('Iteration')
+plt.ylabel('Best Fitness')
+plt.title('PSO Convergence')
+plt.show()
+
+# Plot the actual vs. predicted width
+plt.figure()
+plt.scatter(y_test, y_pred)
+plt.xlabel('Actual Width')
+plt.ylabel('Predicted Width')
+plt.title('Actual vs. Predicted Width')
+plt.show()
+
+# Additional Performance Plots
+
+# Error Histogram
+plt.figure()
+plt.hist(y_test - y_pred, bins=30)
+plt.xlabel('Error')
+plt.ylabel('Frequency')
+plt.title('Error Histogram')
+plt.show()
+
+# Regression Plot
+plt.figure()
+plt.scatter(y_test, y_pred)
+plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], color='red', linestyle='--')
+plt.xlabel('Actual Width')
+plt.ylabel('Predicted Width')
+plt.title('Regression Plot')
+plt.show()
+
+# Fit Plot (ANN)
+# Assuming you have training and validation data
+train_predictions = model.predict(X_train)
+test_predictions = model.predict(X_test)
+
+plt.figure()
+plt.plot(y_train, label='True Data')
+plt.plot(train_predictions, label='Training Predictions')
+plt.plot(test_predictions, label='Test Predictions')
+plt.title('Fit Plot')
+plt.legend()
+plt.show()
